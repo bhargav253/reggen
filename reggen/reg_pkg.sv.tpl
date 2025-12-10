@@ -300,35 +300,6 @@ value = "{}'h {:x}".format(aw, r.offset)
   % endfor
 % endif
 </%def>\
-<%def name="windows_for_iface(iface_name, iface_desc, for_iface, rb)">\
-% if rb.windows:
-<%
-  aw_name, aw = addr_widths[iface_name]
-%>\
-
-  // Window parameters${for_iface}
-% for i,w in enumerate(rb.windows):
-<%
-    win_pfx = '{}_{}'.format(ublock, w.name.upper())
-    base_txt_val = "{}'h {:x}".format(aw, w.offset)
-    size_txt_val = "'h {:x}".format(w.size_in_bytes)
-
-    offset_type = 'logic [{}-1:0]'.format(aw_name)
-    size_type = 'int unsigned'
-    idx_type = 'int unsigned'
-    max_type_len = max(len(offset_type), len(size_type))
-
-    offset_type += ' ' * (max_type_len - len(offset_type))
-    size_type += ' ' * (max_type_len - len(size_type))
-    idx_type += ' ' * (max_type_len - len(idx_type))
-
-%>\
-  parameter ${offset_type} ${win_pfx}_OFFSET = ${base_txt_val};
-  parameter ${size_type} ${win_pfx}_SIZE   = ${size_txt_val};
-  parameter ${idx_type} ${win_pfx}_IDX    = ${i};
-% endfor
-% endif
-</%def>\
 <%def name="reg_data_for_iface(iface_name, iface_desc, for_iface, rb)">\
 % if rb.flat_regs:
 <%
@@ -385,15 +356,6 @@ package ${lblock}${"_" + block.alias_impl if block.alias_impl else ""}_reg_pkg;
 % for iface_name, rb in block.reg_blocks.items():
   parameter int NumRegs${iface_name.title() if iface_name else ""} = ${len(rb.flat_regs)};
 % endfor
-% if len(block.alerts):
-
-  // Alert indices
-  typedef enum int {
-% for idx, alert in enumerate(block.alerts):
-    Alert${lib.Name.to_camel_case(alert.name)}Idx = ${idx}${"" if idx == len(block.alerts) - 1 else ","}
-% endfor
-  } ${block.name.lower()}_alert_idx_t;
-% endif
 <%
   just_default = len(block.reg_blocks) == 1 and None in block.reg_blocks
 %>\
@@ -407,7 +369,6 @@ ${reg2hw_for_iface(iface_name, iface_desc, for_iface, rb)}\
 ${hw2reg_for_iface(iface_name, iface_desc, for_iface, rb)}\
 ${offsets_for_iface(iface_name, iface_desc, for_iface, rb)}\
 ${hwext_resvals_for_iface(iface_name, iface_desc, for_iface, rb)}\
-${windows_for_iface(iface_name, iface_desc, for_iface, rb)}\
 ${reg_data_for_iface(iface_name, iface_desc, for_iface, rb)}\
 % endfor
 

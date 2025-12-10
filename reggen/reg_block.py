@@ -1,18 +1,17 @@
 # Copyright lowRISC contributors (OpenTitan project).
 # Licensed under the Apache License, Version 2.0, see LICENSE for details.
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
 '''Code representing the registers, windows etc. for a block'''
 
 import re
 from typing import Callable, Sequence
 from dataclasses import dataclass, field
 
-from reggen.alert import Alert
 from reggen.access import SWAccess, HWAccess
 from reggen.bus_interfaces import BusInterfaces
 from reggen.clocking import Clocking, ClockingItem
 from reggen.field import Field
-from reggen.interrupt import Interrupt, IntrType
 from reggen.signal import Signal
 from reggen.lib import check_int, check_list, check_str_dict, check_str
 from reggen.multi_register import MultiRegister, EmptyMultiRegException
@@ -33,10 +32,7 @@ class RegBlock:
     multiregs: list[MultiRegister] = field(default_factory=list)
     registers: list[Register] = field(default_factory=list)
     windows: list[Window] = field(default_factory=list)
-
     has_data_intg_passthru: bool = False
-    '''Boolean indication whether ANY window in regblock has data integrity
-    passthrough'''
 
     flat_regs: list[Register] = field(default_factory=list)
     '''A list of all registers, expanding multiregs, ordered by offset'''
@@ -65,6 +61,8 @@ class RegBlock:
 
     async_if: bool = False
     '''Boolean indication that the block is fully asynchronous'''
+    has_data_intg_passthru: bool = False
+    '''True if any window has data integrity passthrough'''
 
     def __post_init__(self) -> None:
         self._addrsep = (self._reg_width + 7) // 8
@@ -347,6 +345,19 @@ class RegBlock:
         if reg.regwen is not None and reg.regwen not in self.wennames:
             self.wennames.append(reg.regwen)
 
+    def add_window(self, window: Window) -> None:
+        if window.name is not None:
+            lname = window.name.lower()
+            assert lname not in self.name_to_offset
+            self.name_to_offset[lname] = window.offset
+
+        self.windows.append(window)
+        self.entries.append(window)
+        assert self.offset <= window.offset
+        self.offset = window.next_offset(self._addrsep)
+
+        self.has_data_intg_passthru |= window.data_intg_passthru
+
     def _add_flat_reg(self, reg: Register) -> None:
         lname = reg.name.lower()
         # The first assertion is checked at the call site (where we can print
@@ -372,19 +383,6 @@ class RegBlock:
         # Remove old key and reinsert register with new key name.
         self.name_to_flat_reg[new_lname] = self.name_to_flat_reg.pop(old_lname)
         self.name_to_offset[new_lname] = self.name_to_offset.pop(old_lname)
-
-    def add_window(self, window: Window) -> None:
-        if window.name is not None:
-            lname = window.name.lower()
-            assert lname not in self.name_to_offset
-            self.name_to_offset[lname] = window.offset
-
-        self.windows.append(window)
-        self.entries.append(window)
-        assert self.offset <= window.offset
-        self.offset = window.next_offset(self._addrsep)
-
-        self.has_data_intg_passthru |= window.data_intg_passthru
 
     def validate(self) -> None:
         '''Run this to check consistency after all registers have been added'''

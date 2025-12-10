@@ -1,0 +1,21 @@
+{
+  name: "top_uart",
+
+  // Minimal memory map for linker/demo
+  memory: [
+    { name: "rom",  base_addr: "0x00000000", size: "0x00001000", type: "rom" },
+    { name: "sram", base_addr: "0x10000000", size: "0x00004000", type: "ram" }
+  ],
+
+  // Single UART block at base address 0x20000000
+  module: [
+    {
+      name: "uart0",
+      // base_addr can be a plain value or a map; we use a plain value here.
+      base_addr: "0x20000000",
+      // Path to the IP-level HJSON (relative to this file)
+      // Not used by toplite, but kept for reference.
+      ip_hjson: "uart.hjson"
+    }
+  ]
+}

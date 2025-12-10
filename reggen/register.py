@@ -1,11 +1,24 @@
 # Copyright lowRISC contributors (OpenTitan project).
 # Licensed under the Apache License, Version 2.0, see LICENSE for details.
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
-from design.mubi import prim_mubi
+class DummyPrimMubi:
+    @staticmethod
+    def is_width_valid(width: int) -> bool:
+        return False
+
+    @staticmethod
+    def mubi_value_as_int(sel: bool, width: int) -> int:
+        raise ValueError("mubi support removed in lightweight build")
+
+try:
+    from design.mubi import prim_mubi  # type: ignore
+except Exception:
+    prim_mubi = DummyPrimMubi()
 
 from reggen.access import SWAccess, HWAccess
 from reggen.clocking import Clocking, ClockingItem
@@ -70,14 +83,6 @@ OPTIONAL_FIELDS = {
         "tags for the register, following the format 'tag_name:item1:item2...'"
     ],
     'shadowed': ['s', "'true' if the register is shadowed"],
-    'update_err_alert': [
-        's', "alert that will be triggered if "
-        "this shadowed register has update error"
-    ],
-    'storage_err_alert': [
-        's', "alert that will be triggered if "
-        "this shadowed register has storage error"
-    ],
     'writes_ignore_errors': [
         'b',
         "This register may update on a TL write that causes an error response."
@@ -97,8 +102,6 @@ class Register(RegBase):
     tags: list[str] = field(default_factory=list)
     decl_resval: int | None = None
     shadowed: bool = False
-    update_err_alert: str | None = None
-    storage_err_alert: str | None = None
     writes_ignore_errors: bool = False
     resval: int = field(init=False)
     resmask: int = field(init=False)
@@ -334,20 +337,6 @@ class Register(RegBase):
             used_bits |= field.bits.bitmask()
             fields.append(field)
 
-        raw_uea = rd.get('update_err_alert')
-        if raw_uea is None:
-            update_err_alert = None
-        else:
-            update_err_alert = check_name(
-                raw_uea, f'update_err_alert for {name} register')
-
-        raw_sea = rd.get('storage_err_alert')
-        if raw_sea is None:
-            storage_err_alert = None
-        else:
-            storage_err_alert = check_name(
-                raw_sea, f'storage_err_alert for {name} register')
-
         writes_ignore_errors = \
             check_bool(rd.get('writes_ignore_errors', False),
                        'writes_ignore_errors flag for {} register'
@@ -356,7 +345,6 @@ class Register(RegBase):
         return Register(name, offset, async_clk, sync_clk, alias_target,
                         desc, fields, hwext, hwqe, hwre, regwen,
                         tags, resval, shadowed,
-                        update_err_alert, storage_err_alert,
                         writes_ignore_errors)
 
     def next_offset(self, addrsep: int) -> int:
@@ -496,8 +484,6 @@ class Register(RegBase):
             assert reg.hwre == reg0.hwre
             assert reg.tags == reg0.tags
             assert reg.shadowed == reg0.shadowed
-            assert reg.update_err_alert == reg0.update_err_alert
-            assert reg.storage_err_alert == reg0.storage_err_alert
             assert reg.writes_ignore_errors == reg0.writes_ignore_errors
 
         for reg, reg_idx in regs:
@@ -547,7 +533,6 @@ class Register(RegBase):
                         reg0.desc, fields,
                         reg0.hwext, reg0.hwqe, reg0.hwre, regwen,
                         reg0.tags, new_resval, reg0.shadowed,
-                        reg0.update_err_alert, reg0.storage_err_alert,
                         reg0.writes_ignore_errors)
 
     def check_valid_regwen(self) -> None:
@@ -638,10 +623,6 @@ class Register(RegBase):
         }  # type: Dict[str, object]
         if self.regwen is not None:
             rd['regwen'] = self.regwen
-        if self.update_err_alert is not None:
-            rd['update_err_alert'] = self.update_err_alert
-        if self.storage_err_alert is not None:
-            rd['storage_err_alert'] = self.storage_err_alert
         if self.alias_target is not None:
             rd['alias_target'] = self.alias_target
 
@@ -655,10 +636,7 @@ class Register(RegBase):
         identical values.
         '''
         # Attributes to be crosschecked
-        attrs = [
-            'async_clk', 'hwext', 'hwqe', 'hwre',
-            'update_err_alert', 'storage_err_alert', 'shadowed'
-        ]
+        attrs = ['async_clk', 'hwext', 'hwqe', 'hwre', 'shadowed']
         for attr in attrs:
             if getattr(self, attr) != getattr(alias_reg, attr):
                 raise ValueError(

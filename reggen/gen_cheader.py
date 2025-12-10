@@ -17,7 +17,6 @@ from reggen.ip_block import IpBlock
 from reggen.params import LocalParam
 from reggen.register import Register
 from reggen.multi_register import MultiRegister
-from reggen.signal import Signal
 from reggen.window import Window
 
 
@@ -276,52 +275,6 @@ def gen_cdefine_multireg(outstr: TextIO, multireg: MultiRegister,
                              existing_defines)
 
 
-def gen_cdefines_interrupt_field(outstr: TextIO, interrupt: Signal,
-                                 component: str, regwidth: int,
-                                 existing_defines: Set[str]) -> None:
-    fieldlsb = interrupt.bits.lsb
-    iname = interrupt.name
-    defname = as_define(component + '_INTR_COMMON_' + iname)
-
-    if interrupt.bits.width() == 1:
-        # single bit
-        genout(
-            outstr,
-            gen_define(defname + '_BIT', [], str(fieldlsb), existing_defines))
-    else:
-        # multiple bits (unless it is the whole register)
-        if interrupt.bits.width() != regwidth:
-            mask = interrupt.bits.msb >> fieldlsb
-            genout(
-                outstr,
-                gen_define(defname + '_MASK', [], hex(mask), existing_defines))
-            genout(
-                outstr,
-                gen_define(defname + '_OFFSET', [], str(fieldlsb),
-                           existing_defines))
-            genout(
-                outstr,
-                gen_define(
-                    defname + '_FIELD', [], '((bitfield_field32_t) { .mask '
-                    f'= {defname}_MASK, .index = {defname}_OFFSET ' '})',
-                    existing_defines))
-
-
-def gen_cdefines_interrupts(outstr: TextIO, block: IpBlock, component: str,
-                            regwidth: int, existing_defines: Set[str]) -> None:
-    # If no_auto_intr_regs is true, then we do not generate common defines,
-    # because the bit offsets for a particular interrupt may differ between
-    # the interrupt enable/state/test registers.
-    if block.no_auto_intr:
-        return
-
-    genout(outstr, format_comment(first_line("Common Interrupt Offsets")))
-    for intr in block.interrupts:
-        gen_cdefines_interrupt_field(outstr, intr, component, regwidth,
-                                     existing_defines)
-    genout(outstr, '\n')
-
-
 def gen_cdefines(block: IpBlock, outfile: TextIO, src_lic: Optional[str],
                  src_copy: str) -> int:
     rnames = block.get_rnames()
@@ -334,9 +287,6 @@ def gen_cdefines(block: IpBlock, outfile: TextIO, src_lic: Optional[str],
 
     gen_cdefines_module_params(outstr, block, block.name, block.regwidth,
                                existing_defines)
-
-    gen_cdefines_interrupts(outstr, block, block.name, block.regwidth,
-                            existing_defines)
 
     for rb in block.reg_blocks.values():
         for x in rb.entries:

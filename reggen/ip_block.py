@@ -1,75 +1,30 @@
 # Copyright lowRISC contributors (OpenTitan project).
 # Licensed under the Apache License, Version 2.0, see LICENSE for details.
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
 '''Code representing an IP block for reggen'''
 
 import logging as log
-from typing import Sequence, Optional
-from dataclasses import dataclass
+from typing import Optional
+from dataclasses import dataclass, field
 
 import hjson  # type: ignore
-from reggen.alert import Alert
 from reggen.bus_interfaces import BusInterfaces
 from reggen.clocking import Clocking, ClockingItem
-from reggen.countermeasure import CounterMeasure
-from reggen.feature import Feature
-from reggen.inter_signal import InterSignal
-from reggen.interrupt import Interrupt
-from reggen.lib import (check_bool, check_int, check_keys, check_list,
-                        check_name)
-from reggen.params import LocalParam, ReggenParams
+from reggen.lib import (check_bool, check_int, check_keys, check_name)
+from reggen.params import ReggenParams
 from reggen.reg_block import RegBlock
-from reggen.signal import Signal
-from semantic_version import Version
+
+try:
+    from semantic_version import Version  # type: ignore
+except ModuleNotFoundError:
+    class Version(str):
+        """Fallback version representation when semantic_version is absent."""
+
+        def __new__(cls, value: str = '0.0.0') -> 'Version':
+            return str.__new__(cls, value)
 
 # Known unique comportable IP names and associated CIP_IDs.
-KNOWN_CIP_IDS = {
-    1: 'adc_ctrl',
-    2: 'aes',
-    3: 'aon_timer',
-    4: 'clkmgr',
-    5: 'csrng',
-    6: 'edn',
-    7: 'entropy_src',
-    8: 'flash_ctrl',
-    9: 'gpio',
-    10: 'hmac',
-    11: 'i2c',
-    12: 'keymgr',
-    13: 'kmac',
-    14: 'lc_ctrl',
-    15: 'otbn',
-    16: 'otp_ctrl',
-    17: 'pattgen',
-    18: 'pinmux',
-    19: 'pwm',
-    20: 'pwrmgr',
-    21: 'rom_ctrl',
-    22: 'rstmgr',
-    23: 'rv_core_ibex',
-    24: 'rv_dm',
-    25: 'rv_timer',
-    26: 'spi_device',
-    27: 'spi_host',
-    28: 'sram_ctrl',
-    29: 'sysrst_ctrl',
-    30: 'uart',
-    31: 'usbdev',
-    32: 'alert_handler',
-    33: 'rv_plic',
-    34: 'ast',
-    35: 'sensor_ctrl',
-    36: 'dma',
-    37: 'mbx',
-    38: 'soc_proxy',
-    39: 'keymgr_dpe',
-    40: 'ascon',
-    41: 'ac_range_check',
-    42: 'soc_dbg_ctrl',
-    43: 'racl_ctrl',
-    44: 'prim_otp',
-}
-
 REQUIRED_ALIAS_FIELDS = {
     'alias_impl': ['s', "identifier for this alias implementation"],
     'alias_target': ['s', "name of the component to apply the alias file to"],
@@ -77,13 +32,10 @@ REQUIRED_ALIAS_FIELDS = {
     'bus_interfaces': ['l', "bus interfaces for the device"],
 }
 
-# TODO: we may want to support for countermeasure and parameter aliases
-# in the future.
 OPTIONAL_ALIAS_FIELDS: dict[str, list[str]] = {}
 
 REQUIRED_FIELDS = {
     'name': ['s', "name of the component"],
-    'cip_id': ['d', "unique comportable IP identifier"],
     'clocking': ['l', "clocking for the device"],
     'bus_interfaces': ['l', "bus interfaces for the device"],
     'registers':
@@ -95,8 +47,6 @@ OPTIONAL_FIELDS = {
     'human_name': ['s', "human-readable name of the component"],
     'one_line_desc': ['s', "one-line description of the component"],
     'one_paragraph_desc': ['s', "one-paragraph description of the component"],
-    # Note: this revision list may be deprecated in the future.
-    'revisions': ['l', "list with revision records"],
     'design_spec':
     ['s', "path to the design specification, relative to repo root"],
     'dv_doc': ['s', "path to the DV document, relative to repo root"],
@@ -109,28 +59,8 @@ OPTIONAL_FIELDS = {
     'version': ['s', "module version"],
     'life_stage': ['s', "life stage of module"],
     'commit_id': ['s', "commit ID of last stage sign-off"],
-    'alert_list': ['lnw', "list of peripheral alerts"],
-    'available_inout_list': ['lnw', "list of available peripheral inouts"],
-    'available_input_list': ['lnw', "list of available peripheral inputs"],
-    'available_output_list': ['lnw', "list of available peripheral outputs"],
-    'expose_reg_if': ['pb', 'if set, expose reg interface in reg2hw signal'],
-    'interrupt_list': ['lnw', "list of peripheral interrupts"],
-    'inter_signal_list': ['l', "list of inter-module signals"],
-    'no_auto_alert_regs': [
-        's', "Set to true to suppress automatic "
-        "generation of alert test registers. "
-        "Defaults to true if no alert_list is present. "
-        "Otherwise this defaults to false."
-    ],
-    'no_auto_intr_regs': [
-        's', "Set to true to suppress automatic "
-        "generation of interrupt registers. "
-        "Defaults to true if no interrupt_list is present. "
-        "Otherwise this defaults to false."
-    ],
     'param_list': ['lp', "list of parameters of the IP"],
     'regwidth': ['d', "width of registers in bits (default 32)"],
-    'reset_request_list': ['l', 'list of signals requesting reset'],
     'scan': ['pb', 'Indicates the module have `scanmode_i`'],
     'scan_reset': ['pb', 'Indicates the module have `scan_rst_ni`'],
     'scan_en': ['pb', 'Indicates the module has `scan_en_i`'],
@@ -140,9 +70,6 @@ OPTIONAL_FIELDS = {
         "information in a comment at the top of the "
         "file."
     ],
-    'wakeup_list': ['lnw', "list of peripheral wakeups"],
-    'countermeasures': ["ln", "list of countermeasures in this block"],
-    'features': ["ln", "list of functional features in this block"],
 }
 
 # Note that the revisions list may be deprecated in the future.
@@ -163,27 +90,15 @@ OPTIONAL_REVISIONS_FIELDS = {
 @dataclass
 class IpBlock:
     name: str
-    cip_id: int
-    version: Version
     regwidth: int
     params: ReggenParams
     reg_blocks: dict[str | None, RegBlock]
-    interrupts: Sequence[Interrupt]
-    no_auto_intr: bool
-    alerts: list[Alert]
-    no_auto_alert: bool
-    scan: bool
-    inter_signals: list[InterSignal]
     bus_interfaces: BusInterfaces
     clocking: Clocking
-    xputs: tuple[Sequence[Signal], Sequence[Signal], Sequence[Signal]]
-    wakeups: Sequence[Signal]
-    reset_requests: Sequence[Signal]
-    expose_reg_if: bool
-    scan_reset: bool
-    scan_en: bool
-    countermeasures: list[CounterMeasure]
-    features: list[Feature]
+    version: Version = Version('0.0.0')
+    scan: bool = False
+    scan_reset: bool = False
+    scan_en: bool = False
     node: str = ''
     alias_impl: str | None = None
 
@@ -218,7 +133,6 @@ class IpBlock:
                         list(OPTIONAL_FIELDS.keys()))
 
         name = check_name(rd['name'], 'name of block at ' + where)
-
         what = '{} block at {}'.format(name, where)
 
         r_regwidth = rd.get('regwidth')
@@ -240,103 +154,10 @@ class IpBlock:
 
         init_block = RegBlock(regwidth, params)
 
-        interrupts = Interrupt.from_raw_list(
-            'interrupt_list for block {}'.format(name),
-            rd.get('interrupt_list', []))
-        alerts = Alert.from_raw_list('alert_list for block {}'.format(name),
-                                     rd.get('alert_list', []))
-        known_cms = {}
-        raw_cms = rd.get('countermeasures', [])
-
-        countermeasures = CounterMeasure.from_raw_list(
-            'countermeasure list for block {}'.format(name), raw_cms)
-
-        features = Feature.from_raw_list(
-            'feature list for block {}'.format(name), rd.get('features', []))
-
-        # Ensure that the countermeasures are unique
-        for x in countermeasures:
-            if str(x) in known_cms:
-                raise RuntimeError(f"Duplicate countermeasure {str(x)}")
-            else:
-                known_cms.update({str(x): 1})
-
-        cip_id = check_int(rd.get('cip_id'), 'cip id for ' + what)
-        # In case there are multiple past revisions of this IP, always pick the
-        # newest one. Note: this revision list may be deprecated in the
-        # future.
-        version = Version('0.0.0')
-        if 'revisions' in rd:
-            for rev in check_list(rd['revisions'], what):
-                rev = check_keys(rev, 'rev item at ' + what,
-                                 list(REQUIRED_REVISIONS_FIELDS.keys()),
-                                 list(OPTIONAL_REVISIONS_FIELDS.keys()))
-                try:
-                    ver = Version(rev['version'])
-                except ValueError as err:
-                    raise RuntimeError(str(err) + ' in ' + what)
-                version = ver if ver >= version else version
-        else:
-            try:
-                #version = Version(rd.get('version'))
-                version = '0.0.0'
-            except ValueError as err:
-                raise RuntimeError(str(err) + ' in ' + what)
-
-        no_auto_intr = check_bool(rd.get('no_auto_intr_regs', not interrupts),
-                                  'no_auto_intr_regs field of ' + what)
-
-        no_auto_alert = check_bool(rd.get('no_auto_alert_regs', not alerts),
-                                   'no_auto_alert_regs field of ' + what)
-
-        if interrupts and not no_auto_intr:
-            if interrupts[-1].bits.msb >= regwidth:
-                raise ValueError("Too many interrupts defined for {}: "
-                                 "msb is {}, which doesn't fit with a "
-                                 "regwidth of {}.".format(
-                                     what, interrupts[-1].bits.msb, regwidth))
-            init_block.make_intr_regs(interrupts)
-
-        if alerts:
-            if not no_auto_alert:
-                if len(alerts) > regwidth:
-                    raise ValueError(
-                        "Too many alerts defined for {}: "
-                        "{} alerts don't fit with a regwidth of {}.".format(
-                            what, len(alerts), regwidth))
-                init_block.make_alert_regs(alerts)
-
-        # Generate a NumAlerts parameter
-        if alerts:
-            existing_param = params.get('NumAlerts')
-            if existing_param is not None:
-                if ((not isinstance(existing_param, LocalParam) or
-                     existing_param.param_type != 'int' or
-                     existing_param.value != str(len(alerts)))):
-                    raise ValueError('Conflicting definition of NumAlerts '
-                                     f'parameter in {what}.')
-            else:
-                params.add(
-                    LocalParam(name='NumAlerts',
-                               desc='Number of alerts',
-                               param_type='int',
-                               value=str(len(alerts)),
-                               unpacked_dimensions=None))
-
         scan = check_bool(rd.get('scan', False), 'scan field of ' + what)
-
-        r_inter_signals = check_list(rd.get('inter_signal_list', []),
-                                     'inter_signal_list field')
-        inter_signals = [
-            InterSignal.from_raw(
-                params,
-                f'entry {idx + 1} of the inter_signal_list field in {what}',
-                entry) for idx, entry in enumerate(r_inter_signals)
-        ]
 
         bus_interfaces = (BusInterfaces.from_raw(
             rd['bus_interfaces'], 'bus_interfaces field of ' + where))
-        inter_signals += bus_interfaces.inter_signals()
 
         clocking = Clocking.from_raw(rd['clocking'],
                                      'clocking field of ' + what)
@@ -344,30 +165,15 @@ class IpBlock:
         reg_blocks = RegBlock.build_blocks(init_block, rd['registers'],
                                            bus_interfaces, clocking, False)
 
-        xputs = (Signal.from_raw_list('available_inout_list for block ' + name,
-                                      rd.get('available_inout_list', [])),
-                 Signal.from_raw_list('available_input_list for block ' + name,
-                                      rd.get('available_input_list', [])),
-                 Signal.from_raw_list(
-                     'available_output_list for block ' + name,
-                     rd.get('available_output_list', [])))
-        wakeups = Signal.from_raw_list('wakeup_list for block ' + name,
-                                       rd.get('wakeup_list', []))
-        rst_reqs = Signal.from_raw_list('reset_request_list for block ' + name,
-                                        rd.get('reset_request_list', []))
-
-        expose_reg_if = check_bool(rd.get('expose_reg_if', False),
-                                   'expose_reg_if field of ' + what)
-
         scan_reset = check_bool(rd.get('scan_reset', False),
                                 'scan_reset field of ' + what)
-
         scan_en = check_bool(rd.get('scan_en', False),
                              'scan_en field of ' + what)
 
+        version = Version(rd.get('version', '0.0.0'))
         # Check that register blocks are in bijection with device interfaces
         reg_block_names = reg_blocks.keys()
-        dev_if_names = []  # type: list[str | None]
+        dev_if_names: list[str | None] = []
         dev_if_names += bus_interfaces.named_devices
         if bus_interfaces.has_unnamed_device:
             dev_if_names.append(None)
@@ -377,11 +183,17 @@ class IpBlock:
                              "by {}).".format(name, dev_if_names,
                                               list(reg_block_names)))
 
-        return IpBlock(name, cip_id, version, regwidth, params, reg_blocks,
-                       interrupts, no_auto_intr, alerts, no_auto_alert,
-                       scan, inter_signals, bus_interfaces, clocking, xputs,
-                       wakeups, rst_reqs, expose_reg_if, scan_reset, scan_en,
-                       countermeasures, features, node)
+        return IpBlock(name=name,
+                       regwidth=regwidth,
+                       params=params,
+                       reg_blocks=reg_blocks,
+                       bus_interfaces=bus_interfaces,
+                       clocking=clocking,
+                       version=version,
+                       scan=scan,
+                       scan_reset=scan_reset,
+                       scan_en=scan_en,
+                       node=node)
 
     @staticmethod
     def from_text(txt: str,
@@ -532,31 +344,10 @@ class IpBlock:
             }
 
         ret['param_list'] = self.params.as_dicts()
-        ret['cip_id'] = self.cip_id
         ret['version'] = str(self.version)
-        ret['interrupt_list'] = self.interrupts
-        ret['no_auto_intr_regs'] = self.no_auto_intr
-        ret['alert_list'] = self.alerts
-        ret['no_auto_alert_regs'] = self.no_auto_alert
-        ret['scan'] = self.scan
-        ret['inter_signal_list'] = self.inter_signals
         ret['bus_interfaces'] = self.bus_interfaces.as_dicts()
-
         ret['clocking'] = self.clocking.items
-
-        inouts, inputs, outputs = self.xputs
-        if inouts:
-            ret['available_inout_list'] = inouts
-        if inputs:
-            ret['available_input_list'] = inputs
-        if outputs:
-            ret['available_output_list'] = outputs
-
-        if self.wakeups:
-            ret['wakeup_list'] = self.wakeups
-        if self.reset_requests:
-            ret['reset_request_list'] = self.reset_requests
-
+        ret['scan'] = self.scan
         ret['scan_reset'] = self.scan_reset
         ret['scan_en'] = self.scan_en
 
@@ -567,24 +358,6 @@ class IpBlock:
         for rb in self.reg_blocks.values():
             ret = ret.union(set(rb.name_to_offset.keys()))
         return ret
-
-    def get_signals_as_list_of_dicts(self) -> list[dict[str, object]]:
-        '''Look up and return signal by name'''
-        result = []
-        for iodir, xput in zip(('inout', 'input', 'output'), self.xputs):
-            for sig in xput:
-                result.append(sig.as_nwt_dict(iodir))
-        return result
-
-    def get_signal_by_name_as_dict(self, name: str) -> dict[str, object]:
-        '''Look up and return signal by name'''
-        sig_list = self.get_signals_as_list_of_dicts()
-        for sig in sig_list:
-            if sig['name'] == name:
-                return sig
-        else:
-            raise ValueError("Signal {} does not exist in IP block {}".format(
-                name, self.name))
 
     def has_shadowed_reg(self) -> bool:
         '''Return boolean indication whether reg block contains shadowed registers'''
@@ -600,14 +373,6 @@ class IpBlock:
         '''Return primary clock of an block'''
 
         return self.clocking.primary
-
-    def check_cm_annotations(self, rtl_names: dict[str, list[tuple[str, int]]],
-                             hjson_path: str) -> bool:
-        '''Check RTL annotations against countermeasure list of this block'''
-
-        return CounterMeasure.check_annotation_list(self.name, hjson_path,
-                                                    rtl_names,
-                                                    self.countermeasures)
 
     def check_regwens(self) -> bool:
         """Checks all regwens are used in at least one other CSR
@@ -646,9 +411,3 @@ class IpBlock:
                           f"register block: {', '.join(unused_regwens)}")
                 status = False
         return status
-
-    def get_alert_by_name(self, name: str) -> Optional[Alert]:
-        for alert in self.alerts:
-            if alert.name == name:
-                return alert
-        return None

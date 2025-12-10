@@ -1,11 +1,24 @@
 # Copyright lowRISC contributors (OpenTitan project).
 # Licensed under the Apache License, Version 2.0, see LICENSE for details.
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
-from design.mubi import prim_mubi
+class DummyPrimMubi:
+    @staticmethod
+    def is_width_valid(width: int) -> bool:
+        return False
+
+    @staticmethod
+    def mubi_value_as_int(sel: bool, width: int) -> int:
+        raise ValueError("mubi support removed in lightweight build")
+
+try:
+    from design.mubi import prim_mubi  # type: ignore
+except Exception:
+    prim_mubi = DummyPrimMubi()
 
 from reggen.access import SWAccess, HWAccess
 from reggen.bits import Bits

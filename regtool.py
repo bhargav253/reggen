@@ -14,9 +14,17 @@ import os
 import inspect
 
 from reggen import (
-    gen_cfg_md, gen_cheader, gen_dv, gen_fpv, gen_md, gen_html, gen_json, gen_rtl,
-    gen_rust, gen_sec_cm_testplan, gen_selfdoc, version,
+    gen_cheader, gen_dv, gen_json, gen_md, gen_rtl, version,
 )
+# Optional generators (guard imports to avoid hard deps)
+try:
+    from reggen import gen_html  # type: ignore
+except ImportError:  # pragma: no cover
+    gen_html = None
+try:
+    from reggen import gen_selfdoc  # type: ignore
+except ImportError:  # pragma: no cover
+    gen_selfdoc = None
 from reggen.ip_block import IpBlock
 
 DESC = """regtool, generate register info from Hjson source"""
@@ -85,6 +93,18 @@ def main():
     parser.add_argument('-d',
                         action='store_true',
                         help='Output register documentation (markdown)')
+    parser.add_argument('--doc-html',
+                        action='store_true',
+                        help='Output register documentation as simple HTML')
+    parser.add_argument('--doc-html-old',
+                        action='store_true',
+                        help='Output html documentation (deprecated)')
+    parser.add_argument('--adoc',
+                        action='store_true',
+                        help='Output register documentation (asciidoc)')
+    parser.add_argument('--doc',
+                        action='store_true',
+                        help='Output source file documentation (markdown)')
     parser.add_argument('-a',
                         '--alias',
                         type=Path,
@@ -99,22 +119,6 @@ def main():
                         '-D',
                         action='store_true',
                         help='Output C defines header')
-    parser.add_argument('--rust',
-                        '-R',
-                        action='store_true',
-                        help='Output Rust constants')
-    parser.add_argument('--tock',
-                        action='store_true',
-                        help='Output Tock constants')
-    parser.add_argument('--interfaces',
-                        action='store_true',
-                        help='Output interfaces documentation (markdown)')
-    parser.add_argument('--doc-html-old',
-                        action='store_true',
-                        help='Output html documentation (depreciated)')
-    parser.add_argument('--doc',
-                        action='store_true',
-                        help='Output source file documentation (markdown)')
     parser.add_argument('-j',
                         action='store_true',
                         help='Output as formatted JSON')
@@ -122,18 +126,9 @@ def main():
     parser.add_argument('-r',
                         action='store_true',
                         help='Output as SystemVerilog RTL')
-    parser.add_argument('--sec-cm-testplan',
-                        action='store_true',
-                        help='Generate security countermeasures testplan.')
     parser.add_argument('-s',
                         action='store_true',
                         help='Output as UVM Register class')
-    parser.add_argument('--systemrdl',
-                        action='store_true',
-                        help='Output a SystemRDL description')
-    parser.add_argument('-f',
-                        action='store_true',
-                        help='Output as FPV CSR rw assertion module')
     parser.add_argument('--outdir',
                         '-t',
                         help='Target directory for generated RTL; '
@@ -208,14 +203,13 @@ def main():
     # the output needs a directory, it is a default path relative to the source
     # file (used when --outdir is not given).
     arg_to_format = [('j', ('json', None)), ('c', ('compact', None)),
-                     ('d', ('registers', None)), ('doc', ('doc', None)),
                      ('r', ('rtl', 'rtl')), ('s', ('dv', 'dv')),
-                     ('f', ('fpv', 'fpv/vip')), ('cdefines', ('cdh', None)),
-                     ('sec_cm_testplan', ('sec_cm_testplan', 'data')),
-                     ('rust', ('rs', None)), ('tock', ('trs', None)),
-                     ('interfaces', ('interfaces', None)),
-                     ('systemrdl', ('systemrdl', None)),
-                     ('doc_html_old', ('doc_html_old', None))]
+                     ('cdefines', ('cdh', None)),
+                     ('d', ('registers', None)),
+                     ('doc', ('doc', None)),
+                     ('doc_html', ('doc_html', None)),
+                     ('doc_html_old', ('doc_html', None)),
+                     ('adoc', ('adoc', None))]
     fmt = None
     dirspec = None
     for arg_name, spec in arg_to_format:
@@ -271,11 +265,6 @@ def main():
                     fmt))
             sys.exit(1)
 
-    if fmt == 'doc':
-        with outfile:
-            gen_selfdoc.document(outfile)
-        exit(0)
-
     srcfull = infile.read()
 
     try:
@@ -305,12 +294,113 @@ def main():
     else:
         if fmt == 'rtl':
             return gen_rtl.gen_rtl(obj, outdir)
-        if fmt == 'sec_cm_testplan':
-            return gen_sec_cm_testplan.gen_sec_cm_testplan(obj, outdir)
         if fmt == 'dv':
             return gen_dv.gen_dv(obj, args.dv_base_names, outdir)
-        if fmt == 'fpv':
-            return gen_fpv.gen_fpv(obj, outdir)
+        if fmt == 'doc':
+            if gen_selfdoc is None:
+                raise RuntimeError("gen_selfdoc not available (missing dependency)")
+            with outfile:
+                gen_selfdoc.document(outfile)
+            return 0
+        if fmt in ('registers', 'doc_html', 'doc_html_old', 'adoc'):
+            # Custom doc rendering (roughly OT style).
+            def _render_table(rows, headers):
+                lines = []
+                lines.append("|===\n| " + " | ".join(headers))
+                for r in rows:
+                    lines.append("| " + " | ".join(r))
+                lines.append("|===")
+                return "\n".join(lines)
+
+            def render_block_adoc(block: IpBlock) -> str:
+                lines = []
+                lines.append(f"= {block.name} Register Map\n")
+                # Summary
+                rows = []
+                for reg in block.reg_blocks[None].flat_regs:
+                    rows.append([
+                        f"<<{reg.name.lower()}, {reg.name}>>",
+                        f"0x{reg.offset:04x}",
+                        f"{block.regwidth // 8}",
+                        reg.desc.splitlines()[0] if reg.desc else ""
+                    ])
+                lines.append("[cols=\"3,2,2,5\",options=\"header\"]")
+                lines.append(_render_table(rows, ["Name", "Offset", "Length (bytes)", "Description"]))
+                lines.append("")
+                # Registers
+                for reg in block.reg_blocks[None].flat_regs:
+                    lines.append(f"[[{reg.name.lower()}]]")
+                    lines.append(f"== {reg.name}")
+                    if reg.desc:
+                        lines.append(reg.desc)
+                    lines.append(f"* Offset: `0x{reg.offset:04x}`")
+                    lines.append(f"* Reset default: `0x{reg.resval:x}`")
+                    lines.append("")
+                    # Fields
+                    field_rows = []
+                    for f in reg.fields:
+                        bits = f"{f.bits.msb}:{f.bits.lsb}" if f.bits.width() > 1 else str(f.bits.lsb)
+                        desc = f.desc or ""
+                        field_rows.append([bits, f.name, desc])
+                    lines.append("[cols=\"2,3,7\",options=\"header\"]")
+                    lines.append(_render_table(field_rows, ["Bits", "Name", "Description"]))
+                    lines.append("")
+                return "\n".join(lines)
+
+            def adoc_to_html(adoc: str) -> str:
+                import re
+                link_re = re.compile(r"<<([A-Za-z0-9_]+),\\s*([^>]+)>>")
+
+                def fmt_cell(text: str) -> str:
+                    if text.startswith("<<") and text.endswith(">>") and "," in text:
+                        inner = text[2:-2]
+                        tgt, label = inner.split(",", 1)
+                        return f'<a href="#{tgt.strip()}">{label.strip()}</a>'
+                    return link_re.sub(lambda m: f'<a href="#{m.group(1)}">{m.group(2)}</a>', text)
+
+                html_lines = ["<html><body>"]
+                in_table = False
+                header_expected = False
+                for line in adoc.splitlines():
+                    if line.startswith("[cols"):
+                        continue
+                    if line.startswith("|==="):
+                        if not in_table:
+                            html_lines.append("<table border=\"1\" cellspacing=\"0\" cellpadding=\"4\">")
+                            in_table = True
+                            header_expected = True
+                        else:
+                            html_lines.append("</table>")
+                            in_table = False
+                        continue
+                    if in_table and line.startswith("| "):
+                        cols = [fmt_cell(c.strip()) for c in line.split("|")[1:] if c.strip()]
+                        tag = "th" if header_expected else "td"
+                        header_expected = False
+                        html_lines.append("<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in cols) + "</tr>")
+                        continue
+                    if line.startswith("= "):
+                        html_lines.append(f"<h1>{line[2:].strip()}</h1>")
+                    elif line.startswith("== "):
+                        html_lines.append(f"<h2 id=\"{line[3:].strip().lower()}\">{line[3:].strip()}</h2>")
+                    elif line.startswith("[[") and line.endswith("]]"):
+                        # Anchor already handled via ID on heading
+                        continue
+                    elif line.strip():
+                        html_lines.append(f"<p>{fmt_cell(line.strip())}</p>")
+                html_lines.append("</body></html>")
+                return "\n".join(html_lines)
+
+            adoc_text = render_block_adoc(obj)
+            if fmt == 'registers':
+                outfile.write(adoc_text)
+                return 0
+            if fmt == 'adoc':
+                outfile.write(adoc_text)
+                return 0
+            html = adoc_to_html(adoc_text)
+            outfile.write(html)
+            return 0
         src_lic = None
         src_copy = ''
         found_spdx = None
@@ -334,20 +424,9 @@ def main():
             src_lic += '\n' + found_spdx
 
         with outfile:
-            if fmt == 'registers':
-                return gen_md.gen_md(obj, outfile)
-            elif fmt == 'interfaces':
-                # Assumes the registers will be in a file called `registers.md`
-                # and within the same location as the output's destination.
-                # Exposing this as an option would nice to do.
-                return gen_cfg_md.gen_cfg_md(obj, outfile, "registers.md")
-            elif fmt == 'doc_html_old':
-                return gen_html.gen_html(obj, outfile)
-            elif fmt == 'cdh':
+            if fmt == 'cdh':
                 return gen_cheader.gen_cdefines(obj, outfile, src_lic,
                                                 src_copy)
-            elif fmt == 'rs':
-                return gen_rust.gen_rust(obj, outfile, src_lic, src_copy)
             else:
                 return gen_json.gen_json(obj, outfile, fmt)
 
